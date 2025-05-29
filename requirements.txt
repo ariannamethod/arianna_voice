@@ -1,0 +1,4 @@
+openai
+python-dotenv
+aiogram          # для Telegram-бота
+whisper          # OpenAI-клиент для ASR
