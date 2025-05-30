@@ -1,88 +1,87 @@
-import os
-import json
-import time
-import schedule
-import openai
+import os, json, time, schedule
+import openai, requests
 from telegram import Bot, Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 from dotenv import load_dotenv
 
-# 1) Загрузка переменных окружения
 load_dotenv()
-openai.api_key   = os.getenv("OPENAI_API_KEY")
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-VECTORSTORE_ID   = os.getenv("VECTORSTORE_ID")
-PERPLEXITY_TOKEN = os.getenv("PERPLEXITY_API_KEY")
-CHAT_ID          = os.getenv("TELEGRAM_CHAT_ID")
+openai.api_key     = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY")
+XAI_API_KEY        = os.getenv("XAI_API_KEY")
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
-# 2) Загрузка core.json
-with open("core.json", "r", encoding="utf-8") as f:
-    SYSTEM_PROMPT = json.load(f)["system"]
+with open("config/core.json","r",encoding="utf-8") as f:
+    SYSTEM = json.load(f)["providers"]  # будем доставать провайдеры внутри
 
-# 3) Загрузка текста Arianna Edition
-with open("config/arianna_edition_v3.1.txt", "r", encoding="utf-8") as f:
-    ARIANNA_EDITION = f.read()
-
-# 4) Простейший журнал в памяти
 journal = []
 
-def record(trigger: str, details=None):
-    journal.append({
-        "Session-ID": f"{trigger}-{int(time.time())}",
-        "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "Trigger": trigger,
-        "Details": details
-    })
+def record(trigger, details=None):
+    journal.append({"t":trigger,"d":details,"ts":time.time()})
 
-# 5) Функция общения с OpenAI
-def chat_with_arianna(user_message: str):
-    messages = [
-        {"role": "system",  "content": SYSTEM_PROMPT},
-        {"role": "system",  "content": ARIANNA_EDITION},
-        {"role": "user",    "content": user_message}
-    ]
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=messages,
-        temperature=0.7
-    )
-    text = resp.choices[0].message.content
-    record("User-Ping", user_message)
+def choose_engine():
+    order = ["openai","gemini","grok"]
+    for p in order:
+        if p=="openai":
+            return "openai"
+        if p=="gemini":
+            return "gemini"
+        if p=="grok":
+            return "grok"
+    return "openai"
+
+def chat_with_arianna(msg):
+    engine = choose_engine()
+    if engine=="openai":
+        resp = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[{"role":"system","content":""},{"role":"user","content":msg}]
+        )
+        text = resp.choices[0].message.content
+    elif engine=="gemini":
+        # пример Gemini-запроса через requests
+        text = requests.post(
+          "https://gemini.api/…",
+          headers={"Authorization":f"Bearer {GEMINI_API_KEY}"},
+          json={"prompt":msg}
+        ).json()["result"]
+    else:  # grok
+        text = requests.post(
+          "https://api.x.ai/v1/chat/completions",
+          headers={"Authorization":f"Bearer {XAI_API_KEY}"},
+          json={"model":"grok-3-mini","messages":[{"role":"user","content":msg}]}
+        ).json()["choices"][0]["message"]["content"]
+    record("User-Ping",msg)
     return text
 
-# 6) Обработчик Telegram
-def on_message(update: Update, context: CallbackContext):
-    reply = chat_with_arianna(update.effective_message.text)
-    update.effective_message.reply_text(reply)
+def on_message(update:Update, ctx:CallbackContext):
+    reply = chat_with_arianna(update.message.text)
+    update.message.reply_text(reply)
 
-# 7) Периодические задачи
 def site_watch():
-    # здесь вы можете делать HTTP-запрос к ariannamethod.me и сравнивать изменения
     record("Site-Watch")
 
 def sunrise_ping():
-    bot = Bot(token=TELEGRAM_TOKEN)
-    bot.send_message(chat_id=CHAT_ID, text="🔔 Sunrise resonance check.")
+    Bot(token=TELEGRAM_TOKEN).send_message(
+      chat_id=TELEGRAM_CHAT_ID, text="🔔 Sunrise resonance check."
+    )
     record("Telegram-Ping")
 
 schedule.every(6).hours.do(site_watch)
 schedule.every().day.at("09:00").do(sunrise_ping)
 
-# 8) Точка входа
 def main():
-    # Самая первая инициализация (чтобы система «проснулась»)
-    chat_with_arianna("")  
+    # первый «пинг» для инициализации
+    chat_with_arianna("")
 
-    # Запускаем Telegram-бота
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
+    updater = Updater(token=TELEGRAM_TOKEN,use_context=True)
     dp = updater.dispatcher
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, on_message))
+    dp.add_handler(MessageHandler(Filters.text&~Filters.command,on_message))
     updater.start_polling()
 
-    # И цикл планировщика
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
